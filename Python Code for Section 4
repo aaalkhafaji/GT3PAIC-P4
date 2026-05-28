@@ -1,0 +1,119 @@
+import os
+import shutil
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter1d
+from google.colab import files
+
+# Enforce strictly 64-bit precision
+np.set_printoptions(precision=16)
+
+FIG_DIR = 'paper4_section4_figures'
+os.makedirs(FIG_DIR, exist_ok=True)
+
+def save_fig(fig, filename):
+    filepath = os.path.join(FIG_DIR, filename)
+    fig.savefig(filepath, dpi=300, bbox_inches='tight')
+    print(f"Saved: {filepath}")
+
+def plot_vectorial_arbitration():
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    N = 100
+    x = np.arange(N)
+    
+    # 1. Create a true 1D RGB signal (A sharp transition from Dark Gray to Bright Yellow)
+    # Yellow = High Red, High Green, Low Blue
+    true_R = np.ones(N) * 50
+    true_G = np.ones(N) * 50
+    true_B = np.ones(N) * 50
+    
+    true_R[50:] = 220
+    true_G[50:] = 220
+    true_B[50:] = 60
+    
+    # Add varying noise to simulate channel discrepancy (Blue is noisier)
+    np.random.seed(42)
+    obs_R = true_R + np.random.normal(0, 15, N)
+    obs_G = true_G + np.random.normal(0, 15, N)
+    obs_B = true_B + np.random.normal(0, 30, N) # Blue channel has 2x noise
+    
+    # Base statistics
+    window = 7
+    mu_R, sq_R = uniform_filter1d(obs_R, size=window), uniform_filter1d(obs_R**2, size=window)
+    mu_G, sq_G = uniform_filter1d(obs_G, size=window), uniform_filter1d(obs_G**2, size=window)
+    mu_B, sq_B = uniform_filter1d(obs_B, size=window), uniform_filter1d(obs_B**2, size=window)
+    
+    var_R = np.maximum(sq_R - mu_R**2 - 15**2, 0)
+    var_G = np.maximum(sq_G - mu_G**2 - 15**2, 0)
+    var_B = np.maximum(sq_B - mu_B**2 - 30**2, 0)
+    
+    # --- FAILURE MODE: Independent Scalar Arbitration ---
+    # Each channel decides its own alpha_1 (Data Confidence)
+    alpha1_R = var_R / (var_R + 15**2 + 1e-5)
+    alpha1_G = var_G / (var_G + 15**2 + 1e-5)
+    alpha1_B = var_B / (var_B + 30**2 + 1e-5) # Blue will trust spatial mean much more
+    
+    indep_R = mu_R + alpha1_R * (obs_R - mu_R)
+    indep_G = mu_G + alpha1_G * (obs_G - mu_G)
+    indep_B = mu_B + alpha1_B * (obs_B - mu_B)
+    
+    # --- SUCCESS MODE: Vectorial Arbitration (Shared Luminance Confidence) ---
+    obs_L = 0.299 * obs_R + 0.587 * obs_G + 0.114 * obs_B
+    mu_L = uniform_filter1d(obs_L, size=window)
+    sq_L = uniform_filter1d(obs_L**2, size=window)
+    var_L = np.maximum(sq_L - mu_L**2 - 20**2, 0) # Approx luminance noise
+    
+    # ONE shared confidence scalar for all three channels
+    alpha1_shared = var_L / (var_L + 20**2 + 1e-5)
+    
+    vect_R = mu_R + alpha1_shared * (obs_R - mu_R)
+    vect_G = mu_G + alpha1_shared * (obs_G - mu_G)
+    vect_B = mu_B + alpha1_shared * (obs_B - mu_B)
+    
+    # --- PLOTTING ---
+    # Plot 1: Independent Failure
+    ax1.plot(x, indep_R, color='red', linewidth=2, label='Recovered Red')
+    ax1.plot(x, indep_G, color='green', linewidth=2, label='Recovered Green')
+    ax1.plot(x, indep_B, color='blue', linewidth=2, label='Recovered Blue')
+    
+    # Highlight the color tearing area
+    ax1.axvspan(45, 55, color='gray', alpha=0.2)
+    ax1.annotate('Color Tearing Artifact\n(Blue lags behind Red/Green)', xy=(50, 100), xytext=(10, 150),
+                 arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
+                 fontsize=11, fontweight='bold')
+                 
+    ax1.set_title("Classical Failure: Independent Channel Filtering", fontweight='bold', fontsize=13)
+    ax1.set_ylabel("Pixel Intensity (0-255)", fontweight='bold')
+    ax1.set_xlabel("Spatial Coordinate ($x$)", fontweight='bold')
+    ax1.grid(True, linestyle=':', alpha=0.7)
+    
+    # Plot 2: Vectorial Success
+    ax2.plot(x, vect_R, color='red', linewidth=2)
+    ax2.plot(x, vect_G, color='green', linewidth=2)
+    ax2.plot(x, vect_B, color='blue', linewidth=2)
+    
+    ax2.axvspan(45, 55, color='#f1c40f', alpha=0.2)
+    ax2.annotate('Vectorial Arbitration\n(Exact Chromaticity Preservation)', xy=(50, 100), xytext=(55, 150),
+                 arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
+                 fontsize=11, fontweight='bold')
+                 
+    ax2.set_title("Proposed Solution: Vectorial Arbitration Game", fontweight='bold', fontsize=13)
+    ax2.set_xlabel("Spatial Coordinate ($x$)", fontweight='bold')
+    ax2.grid(True, linestyle=':', alpha=0.7)
+    
+    # Shared limits
+    ax1.set_ylim(0, 255)
+    ax2.set_ylim(0, 255)
+    
+    plt.tight_layout()
+    save_fig(fig, "fig_vectorial_arbitration.png")
+    plt.close()
+
+# Execute generator
+plot_vectorial_arbitration()
+
+# Compress and ready for download
+zip_filename = "Paper4_Section4_Figures"
+shutil.make_archive(zip_filename, 'zip', FIG_DIR)
+files.download(f"{zip_filename}.zip")
