@@ -1,0 +1,98 @@
+import os
+import shutil
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter1d
+from google.colab import files
+
+# Enforce strictly 64-bit precision
+np.set_printoptions(precision=16)
+
+FIG_DIR = 'paper4_section3_figures'
+os.makedirs(FIG_DIR, exist_ok=True)
+
+def save_fig(fig, filename):
+    filepath = os.path.join(FIG_DIR, filename)
+    fig.savefig(filepath, dpi=300, bbox_inches='tight')
+    print(f"Saved: {filepath}")
+
+def plot_dynamic_weights():
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [1.5, 1]})
+    
+    # 1. Define the 1D physical signal
+    N = 300
+    x = np.arange(N)
+    
+    # True signal: Flat background -> Sharp Edge -> Flat background -> Smooth sine
+    true_signal = np.ones(N) * 50
+    true_signal[100:150] = 200  # Sharp Edge
+    true_signal[200:300] += np.sin(np.linspace(0, 3*np.pi, 100)) * 30
+    
+    # AWGN noise
+    sigma_eta = 20
+    np.random.seed(42)
+    noise = np.random.normal(0, sigma_eta, N)
+    noisy_obs = true_signal + noise
+    
+    # 2. Compute Local Statistics (Window size = 11)
+    window = 11
+    mu_y = uniform_filter1d(noisy_obs, size=window)
+    # Variance = E[X^2] - (E[X])^2
+    sq_mean = uniform_filter1d(noisy_obs**2, size=window)
+    sigma_y_sq = sq_mean - mu_y**2
+    
+    # 3. Game Theoretic Calculations
+    # Handle the "Negative Variance Paradox" gracefully via max(0)
+    sigma_u_sq = np.maximum(sigma_y_sq - sigma_eta**2, 0)
+    
+    # Dynamic Weights (Assuming gamma = 0.1 for Frequency Prior)
+    gamma = 0.1
+    alpha_1 = (1 - gamma) * (sigma_u_sq / (sigma_u_sq + sigma_eta**2 + 1e-8)) # Data Agent
+    alpha_2 = (1 - gamma) * (sigma_eta**2 / (sigma_u_sq + sigma_eta**2 + 1e-8)) # Spatial Agent
+    alpha_3 = np.ones(N) * gamma # Frequency Agent
+    
+    # --- PLOT 1: Signal and Observation ---
+    ax1.plot(x, noisy_obs, color='gray', alpha=0.6, label='Noisy Observation ($y$)')
+    ax1.plot(x, true_signal, color='black', linewidth=2.5, label='True Physical Signal ($u$)')
+    ax1.plot(x, mu_y, color='#e74c3c', linewidth=2, linestyle='--', label=r'Local Spatial Mean ($\mu_y$)') # FIXED with 'r'
+    
+    ax1.set_title("Stochastic 1D Signal Processing", fontweight='bold', fontsize=14)
+    ax1.set_ylabel("Pixel Intensity", fontweight='bold')
+    ax1.legend(loc='upper right', framealpha=0.95, edgecolor='black')
+    ax1.grid(True, linestyle=':', alpha=0.7)
+    
+    # --- PLOT 2: Dynamic Bargaining Power ---
+    # Stacked area chart to show zero-sum negotiation of weights
+    ax2.stackplot(x, alpha_2, alpha_1, alpha_3, 
+                  labels=[r'$\alpha_2$ (Spatial Prior Confidence)', 
+                          r'$\alpha_1$ (Data Confidence)', 
+                          r'$\alpha_3$ (Frequency Confidence)'],
+                  colors=['#3498db', '#f1c40f', '#2ecc71'], alpha=0.8)
+                  
+    ax2.set_title("Dynamic Tripartite Bargaining Weights (Zero-Sum Simplex)", fontweight='bold', fontsize=12)
+    ax2.set_xlabel("Spatial Coordinate ($x$)", fontweight='bold')
+    ax2.set_ylabel(r"Confidence ($\alpha_i$)", fontweight='bold') # FIXED with 'r'
+    ax2.set_ylim(0, 1.0)
+    ax2.legend(loc='upper right', framealpha=0.95, edgecolor='black', fontsize=9)
+    ax2.grid(True, linestyle=':', alpha=0.7)
+    
+    # Annotations
+    ax2.annotate('Flat Region:\nSpatial Agent Dominates', xy=(50, 0.7), xytext=(20, 0.4),
+                 arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=6),
+                 fontsize=10, fontweight='bold', color='white')
+                 
+    ax2.annotate('Sharp Edge:\nData Agent Takes Control', xy=(100, 0.6), xytext=(110, 0.2),
+                 arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=6),
+                 fontsize=10, fontweight='bold', color='black')
+    
+    plt.tight_layout()
+    save_fig(fig, "fig_dynamic_weights.png")
+    plt.close()
+
+# Execute generator
+plot_dynamic_weights()
+
+# Compress and ready for download
+zip_filename = "Paper4_Section3_Figures"
+shutil.make_archive(zip_filename, 'zip', FIG_DIR)
+files.download(f"{zip_filename}.zip")
