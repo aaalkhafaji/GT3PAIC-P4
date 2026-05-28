@@ -1,0 +1,87 @@
+import os
+import shutil
+import numpy as np
+import matplotlib.pyplot as plt
+from google.colab import files
+
+# Enforce strictly 64-bit precision
+np.set_printoptions(precision=16)
+
+FIG_DIR = 'paper4_section2_figures'
+os.makedirs(FIG_DIR, exist_ok=True)
+
+def save_fig(fig, filename):
+    filepath = os.path.join(FIG_DIR, filename)
+    fig.savefig(filepath, dpi=300, bbox_inches='tight')
+    print(f"Saved: {filepath}")
+
+def plot_arbitration_penalty():
+    fig, ax = plt.subplots(figsize=(9, 6))
+    
+    # Define physical interval
+    M = 255
+    
+    # Claims from Example 2.1
+    C1, C2, C3 = 280, 245, 250
+    a1, a2, a3 = 1/3, 1/3, 1/3
+    
+    # Generate continuous domain for the penalty well
+    z = np.linspace(230, 280, 500)
+    
+    # Calculate the collective penalty J(z)
+    J_z = a1*(z - C1)**2 + a2*(z - C2)**2 + a3*(z - C3)**2
+    
+    # The unconstrained classical Wiener solution
+    z_u = a1*C1 + a2*C2 + a3*C3
+    J_u = a1*(z_u - C1)**2 + a2*(z_u - C2)**2 + a3*(z_u - C3)**2
+    
+    # The Constrained Nash Solution (Arbitrated)
+    z_star = min(max(0, z_u), M)
+    J_star = a1*(z_star - C1)**2 + a2*(z_star - C2)**2 + a3*(z_star - C3)**2
+    
+    # Plotting the Penalty Well
+    ax.plot(z, J_z, color='#3498db', linewidth=3, label=r'Arbitration Penalty $J(z)$')
+    
+    # Hardware Boundaries
+    ax.axvspan(M, 280, color='#e74c3c', alpha=0.15)
+    ax.axvline(M, color='#c0392b', linewidth=2.5, linestyle='--', label=r'Hardware Boundary ($M=255$)')
+    
+    # Plot Unconstrained classical failure
+    ax.scatter([z_u], [J_u], color='black', s=100, zorder=5)
+    ax.annotate(f'Classical Wiener (Unconstrained)\n$z_u = {z_u:.2f}$ (Hardware Overflow)', 
+                xy=(z_u, J_u), xytext=(z_u + 2, J_u + 50),
+                arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
+                fontsize=11, fontweight='bold', ha='left')
+                
+    # Plot Bounded Nash Arbitrator solution
+    ax.scatter([z_star], [J_star], color='#27ae60', s=150, zorder=6, edgecolors='black')
+    ax.annotate(f'Bounded Arbitrator (Nash Solution)\n$z^* = {z_star}$', 
+                xy=(z_star, J_star), xytext=(z_star - 15, J_star + 80),
+                arrowprops=dict(facecolor='#27ae60', shrink=0.05, width=1.5, headwidth=8),
+                fontsize=11, fontweight='bold', ha='right', color='#27ae60')
+    
+    # Formatting
+    ax.set_title("Three-Point Discrete Arbitration with Interval Constraint", fontweight='bold', pad=15, fontsize=14)
+    ax.set_xlabel("Recovered Pixel Intensity ($z$)", fontweight='bold')
+    ax.set_ylabel("Collective Penalty Variance $J(z)$", fontweight='bold')
+    
+    ax.set_xlim(235, 275)
+    ax.set_ylim(min(J_z) - 20, max(J_z) + 20)
+    
+    # Text Box for Interval
+    props = dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black')
+    ax.text(236, max(J_z)-10, r"Valid Physical Interval $\mathcal{I} = [0, 255]$", fontsize=11, fontweight='bold', bbox=props)
+    
+    ax.grid(True, linestyle=':', alpha=0.7)
+    ax.legend(loc='upper right', framealpha=0.95, edgecolor='black')
+    
+    save_fig(fig, "fig_arbitration_penalty.png")
+    plt.close()
+
+# Execute generator
+plot_arbitration_penalty()
+
+# Compress and ready for download
+zip_filename = "Paper4_Section2_Figures"
+shutil.make_archive(zip_filename, 'zip', FIG_DIR)
+files.download(f"{zip_filename}.zip")
