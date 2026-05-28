@@ -1,0 +1,162 @@
+import os
+import shutil
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter
+from scipy.signal import wiener
+from scipy.fft import fft2, ifft2, fftshift
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+from google.colab import files
+
+# Enforce strictly 64-bit precision
+np.set_printoptions(precision=16)
+
+FIG_DIR = 'paper4_section6_figures'
+os.makedirs(FIG_DIR, exist_ok=True)
+
+def save_fig(fig, filename):
+    filepath = os.path.join(FIG_DIR, filename)
+    fig.savefig(filepath, dpi=300, bbox_inches='tight')
+    print(f"Saved: {filepath}")
+
+def extract_frequency_prior(img_channel, sigma_eta, N):
+    """Calculates the C_3 Frequency Prior Claim using 2D FFT"""
+    F_noisy = fft2(img_channel)
+    PSD = (np.abs(F_noisy)**2) / (N * N)
+    noise_power = (sigma_eta**2) * (N * N)
+    W = np.maximum(0, (PSD - noise_power) / (PSD + 1e-8))
+    F_filtered = F_noisy * W
+    C_3 = np.real(ifft2(F_filtered))
+    return np.clip(C_3, 0, 255)
+
+def run_numerical_validation():
+    fig, axes = plt.subplots(1, 5, figsize=(22, 5))
+    
+    # 1. Synthesize the Ground Truth Image (N x N x 3)
+    N = 256
+    gt = np.zeros((N, N, 3))
+    
+    # Background: High-frequency periodic texture (e.g., fabric/brick)
+    x = np.linspace(0, 10*np.pi, N)
+    y = np.linspace(0, 10*np.pi, N)
+    X, Y = np.meshgrid(x, y)
+    texture = np.sin(X) * np.cos(Y) * 40 + 100
+    for c in range(3):
+        gt[:, :, c] = texture
+        
+    # Foreground: Sharp geometric shapes to test Color Tearing
+    # A bright Red square
+    gt[50:120, 50:120, 0] = 220
+    gt[50:120, 50:120, 1:3] = 40
+    # A bright Cyan circle
+    mask = (X - 7*np.pi)**2 + (Y - 5*np.pi)**2 < 15
+    gt[mask, 0] = 30
+    gt[mask, 1] = 200
+    gt[mask, 2] = 220
+    
+    gt = np.clip(gt, 0, 255)
+    
+    # 2. Simulate Hardware Observation (AWGN + Impulse Overflow)
+    sigma_eta = 25
+    np.random.seed(42)
+    noise = np.random.normal(0, sigma_eta, (N, N, 3))
+    obs = gt + noise
+    
+    # Impulse noise (5%)
+    impulse_mask = np.random.rand(N, N) < 0.05
+    obs[impulse_mask] = np.random.rand(np.sum(impulse_mask), 3) * 300 # Induces overflow
+    obs = np.clip(obs, 0, 255) # Hardware physically clips at 255
+    
+    # 3. BASELINE 1: Classical Wiener Filter (CWF) + Naive Clipping
+    cwf = np.zeros_like(obs)
+    for c in range(3):
+        # Using standard 5x5 scipy wiener
+        cwf[:, :, c] = wiener(obs[:, :, c], (5, 5)) 
+    cwf = np.clip(cwf, 0, 255)
+    
+    # 4. BASELINE 2: Independent RGB Arbitration (IRGB-A)
+    # Equations 4 & 5
+    window = 5
+    irgb = np.zeros_like(obs)
+    for c in range(3):
+        chan = obs[:, :, c]
+        mu = uniform_filter(chan, size=window)
+        sq_mu = uniform_filter(chan**2, size=window)
+        var = np.maximum(sq_mu - mu**2 - sigma_eta**2, 0)
+        
+        alpha_1 = var / (var + sigma_eta**2 + 1e-5)
+        # Using a simplified 2-player game (Data vs Spatial) for the independent baseline
+        irgb[:, :, c] = mu + alpha_1 * (chan - mu)
+    irgb = np.clip(irgb, 0, 255)
+    
+    # 5. PROPOSED: Vectorial Arbitration Game (VAG)
+    # Using Shared Luminance Confidence and Tripartite Game (C1, C2, C3)
+    vag = np.zeros_like(obs)
+    
+    # Compute Shared Luminance Variance
+    obs_L = 0.299 * obs[:,:,0] + 0.587 * obs[:,:,1] + 0.114 * obs[:,:,2]
+    mu_L = uniform_filter(obs_L, size=window)
+    sq_L = uniform_filter(obs_L**2, size=window)
+    var_L = np.maximum(sq_L - mu_L**2 - sigma_eta**2, 0)
+    
+    gamma = 0.15 # 15% bargaining power given to Frequency Prior
+    alpha_1_shared = (1 - gamma) * (var_L / (var_L + sigma_eta**2 + 1e-5))
+    alpha_2_shared = (1 - gamma) * (sigma_eta**2 / (var_L + sigma_eta**2 + 1e-5))
+    alpha_3_shared = gamma
+    
+    for c in range(3):
+        C1 = obs[:, :, c]
+        C2 = uniform_filter(C1, size=window)
+        C3 = extract_frequency_prior(C1, sigma_eta, N)
+        
+        # Tripartite Vectorial Nash Projection (Eq. 7 & 8)
+        unconstrained_z = alpha_1_shared * C1 + alpha_2_shared * C2 + alpha_3_shared * C3
+        vag[:, :, c] = np.clip(unconstrained_z, 0, 255)
+        
+    # --- METRICS CALCULATIONS ---
+    data_range = 255.0
+    psnr_cwf = psnr(gt, cwf, data_range=data_range)
+    ssim_cwf = ssim(gt, cwf, data_range=data_range, channel_axis=2)
+    
+    psnr_irgb = psnr(gt, irgb, data_range=data_range)
+    ssim_irgb = ssim(gt, irgb, data_range=data_range, channel_axis=2)
+    
+    psnr_vag = psnr(gt, vag, data_range=data_range)
+    ssim_vag = ssim(gt, vag, data_range=data_range, channel_axis=2)
+    
+    # --- PLOTTING ---
+    images = [gt, obs, cwf, irgb, vag]
+    titles = [
+        "(a) Ground Truth\n(Infinite Precision)",
+        "(b) 8-bit Observation\nAWGN + Impulse",
+        f"(c) Classical Wiener\nPSNR: {psnr_cwf:.2f} | SSIM: {ssim_cwf:.3f}",
+        f"(d) Independent Arb.\nPSNR: {psnr_irgb:.2f} | SSIM: {ssim_irgb:.3f}",
+        f"(e) Vectorial Arb. Game\nPSNR: {psnr_vag:.2f} | SSIM: {ssim_vag:.3f}"
+    ]
+    
+    for i, ax in enumerate(axes):
+        # Convert to uint8 for correct RGB display
+        ax.imshow(images[i].astype(np.uint8))
+        ax.set_title(titles[i], fontweight='bold', pad=10, fontsize=12)
+        ax.axis('off')
+        
+        # Draw zoom-in boxes on the baseline failures
+        if i == 2: # CWF (Texture destruction)
+            rect = plt.Rectangle((150, 150), 40, 40, fill=False, edgecolor='red', linewidth=2, linestyle='--')
+            ax.add_patch(rect)
+        if i == 3: # IRGB (Color Tearing on the cyan circle edge)
+            rect = plt.Rectangle((120, 150), 40, 40, fill=False, edgecolor='yellow', linewidth=2, linestyle='--')
+            ax.add_patch(rect)
+            
+    plt.tight_layout()
+    save_fig(fig, "fig_visual_validation.png")
+    plt.close()
+
+# Execute generator
+run_numerical_validation()
+
+# Compress and ready for download
+zip_filename = "Paper4_Section6_Figures"
+shutil.make_archive(zip_filename, 'zip', FIG_DIR)
+files.download(f"{zip_filename}.zip")
